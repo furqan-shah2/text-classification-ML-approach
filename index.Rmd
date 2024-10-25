@@ -1,0 +1,345 @@
+---
+title: "Text Classification Tutorial in R: UK Annual Reports Example"
+author: "Furqan Shah"
+date: "2024-10-25"
+output: github_document
+---
+
+
+# Introduction
+
+In this tutorial, we will learn how to build and implement a text classification model using a machine learning approach in R, specifically within the context of UK annual reports. The process covers data loading, preprocessing, tokenization, visualization, model training, and evaluation. A manually self-annotated dataset of text from UK annual reports is used to train, implement, and assess the model's performance. This step-by-step guide offers a comprehensive understanding of text classification, equipping you with techniques that can be adapted to your own projects.
+
+## Install and Load Libraries
+
+We begin by loading the necessary R libraries for the tasks listed above.
+
+```{r install-libraries, eval=TRUE, message=FALSE, warning=FALSE, include=TRUE}
+# List of required packages
+packages <- c("dplyr", "tidyr", "stringr", "tidytext", "tidyverse", "ggplot2", "caret", "tm", "SnowballC")
+
+# Install packages that are not yet installed
+installed_packages <- rownames(installed.packages())
+
+for (pkg in packages) {
+  if (!(pkg %in% installed_packages)) {
+    install.packages(pkg, dependencies = TRUE)
+  }
+  library(pkg, character.only = TRUE)
+}
+```
+
+
+## Load Data
+
+The data consists of 23 separate `.tsv` files, each representing a different company. Each file contains two columns: `Text` (which holds sentences or paragraphs) and `Theme` (the category assigned to the text). The categories in `Theme` column include: **Financial**, **Human**, **Intellectual**, **Natural**, **Social & Relationship**, and **Unclassified**, as defined below:
+
+
+- **Financial**: *Information about the company's financial performance, including revenue, expenses, profits, and financial health.*
+- **Human**: *Relates to employees, their well-being, skills, and workforce management.*
+- **Intellectual**: *Covers intangible assets like patents, trademarks, and the company’s innovation capacity.*
+- **Natural**: *Focuses on environmental sustainability, resource usage, and the company’s ecological impact.*
+- **Social & Relationship**: *Refers to the company’s interactions with stakeholders, including communities, customers, and regulators.*
+- **Manufactured**: *Involves physical assets such as infrastructure, equipment, and operational capacity.*
+- **Unclassified**: *Includes disclosures that do not fit into the other categories.*
+
+The model will be trained on this dataset to classify firm(s) annual report text into the appropriate reporting themes.
+
+
+```{r load-data, message=TRUE, warning=FALSE}
+# Set the path to your data files (Note: Replace the path variable with the path to your own data directory)
+
+path <- "F:/Github Projects/text-classification-ML-approach/data files"
+
+# Create list of files using path
+file_list <- list.files(path)
+file_list
+
+# Function to read the files
+read_file <- function(file_name) {
+  read_tsv(file.path(path, file_name),
+           col_names = TRUE,
+           col_types = "cc") %>%
+    mutate(file_name = file_name)
+}
+
+# Apply the function
+data <- bind_rows(lapply(file_list, read_file))
+data
+
+# Preview the data structure
+glimpse(data)
+```
+
+## Data Preprocessing, Cleaning and Exploration
+
+This section focuses on cleaning and preprocessing the text data to prepare it for building a classification model. The process involves removing special characters, stripping unnecessary white spaces, and filtering out short annotations. Additionally, each document is assigned a unique ID to ensure easy tracking and reference. After the data is preprocessed, we will explore the content by visualizing the most frequent words in each category, providing insights into the themes and common terms associated with them. These steps help ensure the data is clean, standardized, and ready for further analysis.
+
+```{r clean-data, message=TRUE, warning=FALSE}
+# Assign an ID to each annotation
+annotations <- data %>%
+  na.omit() %>%
+  rowid_to_column(., "id") %>%
+  rename(text = Text,
+         theme = Theme)
+
+glimpse(annotations)
+
+# Remove special characters and strip extra white space
+annotations <- annotations %>%
+  mutate_at(vars(text), funs(gsub("[?âè.ã'’'½_&$,%'-']", " ", .))) %>%   # removing special characters
+  mutate_at(vars(text), funs(gsub("([0-9])([a-z])", "\\1 \\2", .))) %>%  # creating gap between words and numbers
+  mutate_at(vars(text), funs(gsub("([a-z])([0-9])", "\\1 \\2", .))) %>%  # same as above with reversed order
+  mutate_at(vars(text), funs(gsub("\\s+", " ", .))) %>%                  # stripping extra white space
+  mutate(length = lengths(gregexpr("\\W+", text)) + 1,                   # number of words in an annotation
+         mean_length = mean(as.numeric(length))) %>%                     # average length of annotations
+  filter(length > 1)                                                     # Filter out short annotations
+
+glimpse(annotations)
+
+# Number of annotations per theme
+annotations %>% count(theme)
+```
+
+The code below visualizes the top 15 most frequent words in each reporting category, helping to identify key terms associated with different themes. First, the text is tokenized, breaking annotations into individual words (tokens), per row. Non-word tokens (e.g., numbers, special characters) and common stop words (like "the," "and," "of") are filtered out, allowing the focus to remain on meaningful terms that differentiate each category.
+
+```{r plotannotations-data, message=TRUE, warning=FALSE, fig.height=10, fig.width=8}
+# Plot top 15 words - total annotations
+tidy_top15 <- annotations %>%
+  unnest_tokens(word, text) %>%                               # Tokenize text into one word per row
+  mutate_all(funs(gsub("([0-9])([a-z])", "\\1 \\2", .))) %>%
+  mutate_all(funs(gsub("([a-z])([0-9])", "\\1 \\2", .))) %>%
+  unnest_tokens(word, word) %>%
+  mutate_all(funs(gsub("[?âè.''_&$,%]"," ", .))) %>%
+  unnest_tokens(word, word) %>%
+  anti_join(stop_words) %>%
+  filter(!str_detect(word, "^[0-9]*$")) %>%
+  count(word, theme) %>%
+  group_by(theme) %>%
+  arrange(desc(n)) %>%
+  top_n(15) %>%                                            # Select the top 15 frequent words across six categories.
+  ungroup() %>%
+  arrange(theme, desc(n))
+tidy_top15
+
+
+tidy_top15_plot <- tidy_top15 %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n)) +
+  geom_col () +
+  labs(x = NULL, y = "n", title = "Top 15 Words - Training") +
+  facet_wrap(~theme, ncol = 2, scales = "free") +
+  coord_flip()
+tidy_top15_plot
+```
+
+
+## Split Data into Training and Testing Sets
+
+In this section, the annotations data is split into a training set and a testing set. The training set, comprising 80% of the data selected at random, will be used to train the model, while the remaining 20% serves as the testing set for validation. This split ensures the model is evaluated on unseen data to assess its performance accurately.
+
+```{r split-data, message=TRUE, warning=FALSE}
+## Split data into training and testing sets
+set.seed(123)  # For reproducibility
+
+train_row_numbers <- createDataPartition(annotations$theme, p = 0.8, list = FALSE)
+
+train_data <- annotations[train_row_numbers, ]
+test_data <- annotations[-train_row_numbers, ]
+
+glimpse(train_data)
+glimpse(test_data)
+```
+
+
+## Tokenizing Training and Testing Data
+
+In this section, the training and testing data are tokenized, converting each annotation into individual words (one word per row). Stop words are removed to focus on meaningful terms, and Porter stemming is applied to reduce words to their root form. For example, "connecting," "connected," and "connection" are all reduced to "connect," helping to standardize the text and improve model performance.
+
+```{r prepare-tokenize-data, message=TRUE, warning=FALSE}
+## Prepare training data
+tidy_train_data <- train_data %>%
+  filter(!str_detect(text, "^[0-9]*$")) %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words) %>%                    # removing stop words     
+  mutate(word = SnowballC::wordStem(word)) %>% # Stem words to their morphological root (Porter's stemming)
+  mutate(characters = nchar(word)) %>%         # number of alphabets in a word
+  filter(characters > 3) 
+
+glimpse(tidy_train_data)
+
+## Prepare test data
+tidy_test_data <- test_data %>%
+  filter(!str_detect(text, "^[0-9]*$")) %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words) %>%                    # removing stop words     
+  mutate(word = SnowballC::wordStem(word)) %>% # Stem words to their morphological root (Porter's stemming)
+  mutate(characters = nchar(word)) %>%         # number of alphabets in a word
+  filter(characters > 3)
+
+glimpse(tidy_test_data)
+
+```
+
+## Create Document-Term-Matrices for Training and Test Data
+
+In this section, the tokenized training and testing data from the previous step are used to create a Document-Term Matrix (DTM) for each dataset. To enhance the DTM, ***TF-IDF*** (Term Frequency-Inverse Document Frequency) weighting is applied.
+
+***TF-IDF*** relies on the intuition that: (i) the more frequently a word appears in a document (in this case, a narrative reporting category), the more representative it is of that document's content; and (ii) the more documents a word appears in, the less useful it is for distinguishing between them. This approach helps capture features (words) that are unique to specific narrative reporting categories, improving the model's ability to classify the content accurately.
+
+The code `removeSparseTerms(sparse = 0.99)` filters out infrequent words from a DTM. It removes terms that appear in less than 1% of the documents, helping to eliminate rare, less informative words and reduce the matrix size, thus improving model efficiency.
+
+```{r dtm-data, message=TRUE, warning=FALSE}
+# Create DTM for training data
+dtm_train_data <- tidy_train_data %>%
+  filter(grepl("^[[:alpha:]]+$", word)) %>%
+  count(id, word) %>%
+  cast_dtm(document = id,
+           term = word,
+           value = n,
+           weighting = tm::weightTfIdf) %>%
+  removeSparseTerms(sparse = 0.99)
+
+dtm_train_data
+
+# Create DTM for test data
+dtm_test_data <- tidy_test_data %>%
+  filter(grepl("^[[:alpha:]]+$", word)) %>%
+  count(id, word) %>%
+  cast_dtm(document = id,
+           term = word,
+           value = n,
+           weighting = tm::weightTfIdf) %>%
+  removeSparseTerms(sparse = 0.997)
+
+dtm_test_data
+```
+
+## Train the Text Classification Model using Training Data
+
+In this section, we build a text classification model using training data. We use the `ranger` algorithm, which is a fast implementation of random forest optimized for high-dimensional data such as text. The training is conducted using an out-of-bag (OOB) sampling method, where each tree is trained on a bootstrap sample containing approximately 63% of the data, while the remaining 37%—the OOB data—serves as a test set for that tree. By aggregating the OOB predictions across all trees, the model provides an estimate of prediction error and thus a measure of model performance. For this tutorial, the model is trained using 20 trees, offering a balance between efficiency and accuracy, though a higher number could improve performance.
+
+
+```{r train-data, message=TRUE, warning=FALSE}
+
+# Slice training data so that only documents in the DTM remain (some were dropped due to sparsity when creating DTM)
+doc_names <- as.numeric(dtm_train_data$dimnames$Docs) # Save doc names
+
+slice_train_data <- train_data %>% 
+  filter(id %in% doc_names)
+
+glimpse(slice_train_data)
+
+set.seed(1234)
+
+# Build a model using random forest "ranger" algorithm
+ranger_model <- train(x = as.matrix(dtm_train_data),
+                    y = factor(slice_train_data$theme),
+                    method = "ranger",
+                    importance = "impurity",
+                    num.trees = 20,
+                    trControl = trainControl(method = "oob"))
+
+# View the model
+ranger_model
+
+# View the confusion matrix from OOB sampling with aggregated predictions across all trees
+# Note this is an internally generated measure of model accuracy (i.e., not the confusion matrix from test data)
+ranger_model$finalModel$confusion.matrix
+
+```
+
+## Make Predictions and Evaluate the Model on Test Data
+
+In this section, we use the trained model to make predictions on the testing data and evaluate its performance. To do this, we generate a confusion matrix and calculate various performance metrics for each reporting category, including accuracy, balance, sensitivity, F1 score, and kappa. These metrics will provide a comprehensive assessment of how well the model performs across different categories.
+
+```{r predict-data, message=TRUE, warning=FALSE}
+## Implemented the model on the testing data set
+predictions_test_data <- predict.train(ranger_model, as.matrix(dtm_test_data))
+
+test_data_slice <- slice(annotations, as.numeric(dtm_test_data$dimnames$Docs)) %>%
+  mutate(theme = factor(theme, levels = unique(theme)))
+
+confusion_matrix <- confusionMatrix(reference = test_data_slice$theme, data = predictions_test_data, mode = 'everything')
+confusion_matrix
+
+
+prediction_results <- cbind(test_data_slice, predictions_test_data)
+glimpse(prediction_results)
+
+```
+
+The confusion matrix generated from the model's predictions on the test data shows that the **Financial** and **Natural** reporting categories have the highest accuracy. This is further supported by performance metrics such as sensitivity, specificity, and F1 score. On the other hand, the **Manufactured** category is the least accurately classified. This is understandable, as companies often describe their assets using different terminology, reflecting the varied nature of the assets they rely on for value creation. For instance, a retail firm might refer to its global network of stores, while a hotel chain may focus on its hotel properties, leading to differences in terminology that make classification more challenging.
+
+The next section provides further validation of the model.
+
+## Further Model Validation: Comparing Top Words in Training Data and Model-Classified Data
+
+In this section, we visualize and assess the consistency between the top 15 words in each category from the training dataset and those from the classifications assigned by the text classification model. Our goal is to determine whether the top 15 words from the model's classified data resemble those from the training set and accurately reflect the expected themes. By comparing these, we can gauge the model's effectiveness in correctly classifying the text.
+
+```{r validation-data, message=TRUE, warning=FALSE, fig.width = 8 , fig.height= 10}
+# Plot top 15 words - Classified data
+predicted_tidy_top15 <- prediction_results %>%
+  unnest_tokens(word, text) %>%
+  mutate_all(funs(gsub("([0-9])([a-z])", "\\1 \\2", .))) %>%
+  mutate_all(funs(gsub("([a-z])([0-9])", "\\1 \\2", .))) %>%
+  unnest_tokens(word, word) %>%
+  mutate_all(funs(gsub("[?âè.''_&$,%]"," ", .))) %>%
+  unnest_tokens(word, word) %>%
+  anti_join(stop_words) %>%
+  filter(!str_detect(word, "^[0-9]*$")) %>%
+  count(word, predictions_test_data) %>%
+  group_by(predictions_test_data) %>%
+  arrange(desc(n)) %>%
+  top_n(15) %>%
+  ungroup() %>%
+  arrange(predictions_test_data, desc(n))
+predicted_tidy_top15
+
+predicted_top15_plot <- 
+  predicted_tidy_top15 %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n)) +
+  geom_col () +
+  labs(x = NULL, y = "n", title = "Top 15 Words - Classified") +
+  facet_wrap(~predictions_test_data, ncol = 2, scales = "free") +
+  coord_flip()
+predicted_top15_plot
+
+# Plot top 15 words - training data
+train_tidy_top15 <- train_data %>%
+  unnest_tokens(word, text) %>%
+  mutate_all(funs(gsub("([0-9])([a-z])", "\\1 \\2", .))) %>%
+  mutate_all(funs(gsub("([a-z])([0-9])", "\\1 \\2", .))) %>%
+  unnest_tokens(word, word) %>%
+  mutate_all(funs(gsub("[?âè.''_&$,%]"," ", .))) %>%
+  unnest_tokens(word, word) %>%
+  anti_join(stop_words) %>%
+  filter(!str_detect(word, "^[0-9]*$")) %>%
+  count(word, theme) %>%
+  group_by(theme) %>%
+  arrange(desc(n)) %>%
+  top_n(15) %>%
+  ungroup() %>%
+  arrange(theme, desc(n))
+train_tidy_top15
+
+
+train_tidy_top15_plot <- train_tidy_top15 %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n)) +
+  geom_col () +
+  labs(x = NULL, y = "n", title = "Top 15 Words - Training") +
+  facet_wrap(~theme, ncol = 2, scales = "free") +
+  coord_flip()
+train_tidy_top15_plot
+
+```
+
+The above figures show the similarity is evident when comparing the top words. For instance, in the **Natural** capital  category from the training data, words such as "emissions," "water," "energy," "carbon," "performance," "environmental," "scope," "waste," "reduction," and "GHG" are prominent, and these terms also appear in the model-assigned classifications, with similar words like "water," "emission," "environmental," "sustainable," "reduce," "GHG," and "greenhouse." Similarly, in the **Human** capital category, the training data features words like "employees," "people," "training," "skills," "leadership," and "talent," which are reflected in the classified text with similar terms, confirming the model's alignment with expected themes.
+
+## Conclusion
+
+In this tutorial, we walked through the process of building a text classification model using the ranger algorithm in R. We started with data preparation, covering steps like cleaning, tokenization, and creating a ***TF-IDF*** weighted document-term matrix. The model was then trained using Out-of-Bag sampling, which provided an unbiased way to evaluate its performance. We measured its accuracy with key metrics such as sensitivity and F1 score. To wrap up, we validated the model by comparing the top words from the training data with those from the classified output, checking for consistency across themes.
+
+Now, you can take this code and use it as a starting point, adapting it to your own text classification contexts
