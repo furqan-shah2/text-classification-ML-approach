@@ -250,7 +250,7 @@ tidy_top15_plot <- tidy_top15 %>%
   mutate(word = reorder(word, n)) %>%
   ggplot(aes(word, n)) +
   geom_col () +
-  labs(x = NULL, y = "n", title = "Top 15 Words - Training") +
+  labs(x = NULL, y = "n", title = "Top 15 Words - Total Annotations Data") +
   facet_wrap(~theme, ncol = 2, scales = "free") +
   coord_flip()
 tidy_top15_plot
