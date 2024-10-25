@@ -38,7 +38,9 @@ for (pkg in packages) {
 ## Load Data
 
 The data consists of 23 separate `.tsv` files, each representing a
-different company. Each file contains two columns: `Text` (which holds
+different company (provided on the
+[repository](https://github.com/furqan-shah2/text-classification-ML-approach)
+for this page). . Each file contains two columns: `Text` (which holds
 sentences or paragraphs) and `Theme` (the category assigned to the
 text). The categories in `Theme` column include: **Financial**,
 **Human**, **Intellectual**, **Natural**, **Social & Relationship**, and
